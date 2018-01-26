@@ -1,0 +1,1911 @@
+---
+title: 'bioRxiv: Data Analysis'
+author: "Stylianos Serghiou"
+date: '`r format(Sys.time(), "%d/%m/%Y")`'
+output:
+  html_document:
+    df_print: kable
+    highlight: tango
+    theme: paper
+    toc: yes
+    toc_depth: 2
+    toc_float: yes
+  pdf_document:
+    df_print: kable
+    highlight: tango
+    keep_tex: yes
+    latex_engine: pdflatex
+header-includes:
+- \DeclareUnicodeCharacter{3B8}{~}
+- \DeclareUnicodeCharacter{3B1}{~}
+- \DeclareUnicodeCharacter{3B2}{~}
+- \DeclareUnicodeCharacter{223C}{~}
+- \DeclareUnicodeCharacter{2264}{~}
+- \DeclareUnicodeCharacter{2265}{~}
+---
+
+<style>
+p {
+
+text-align: justify;
+text-justify: interword;
+padding: 0 0 0.5em 0
+
+}
+</style>
+
+```{r knitr, include = FALSE}
+# Load knitr
+library(knitr)
+
+# Define chunk options
+knitr::opts_chunk$set(echo = TRUE
+                      , warning   = FALSE 
+                      , message   = FALSE
+                      , comment   = NA
+                      , fig.align = "center"
+                      , linewidth = 91)
+
+# Initiatialize hook
+hook_output = knit_hooks$get("output")
+
+# Hook to wrap output text when it exceeds 'n' using linewidth
+knit_hooks$set(output = function(x, options) {
+  
+  if (!is.null(n <- options$linewidth)) {
+    x = knitr:::split_lines(x)
+    
+    if (any(nchar(x) > n)) # wrap lines wider than 'n' 
+      x <- strwrap(x, width = n)
+      x <- paste(x, collapse = "\n")
+  }
+  hook_output(x, options)
+})
+
+# For more knitr options visit: https://yihui.name/knitr/options/
+# and his github page: https://github.com/yihui/knitr-examples
+
+# To update the package use:
+# library(devtools); setwd("/Users/Stelios/"); install("serghiouTemplates")
+```
+
+```{r load, include = FALSE}
+# Load packages
+library(readxl)
+library(ggplot2)
+library(plotly)
+library(scales)    # map data to aesthetics
+library(reshape2)
+library(survival)
+library(MASS)
+library(magrittr)
+library(car)       # great diagnostic tools for regression
+library(pbapply)
+
+# Source functions
+source("bioRxiv_Functions.R")
+
+# Load data
+load("bioRxiv_Data.RData")
+# load("bioRxiv_Analysis.RData")
+```
+
+# Figure 1: Data acquisition
+
+<p></p>
+
+Let us explore how we obtained our bioRxiv sample.
+
+```{r figure_1_pre}
+# How many unique records did we obtain?
+nrow(preprint)
+# [1] 7752
+
+# How many preprints do we have a complete record of from bioRxiv?
+sum(complete.cases(preprint[, c(1:8, 10:12, 15:18)]))
+# [1] 7675
+
+# Identify what information is missing
+data.frame(Count = apply(preprint[, 1:20], 2, function(x){sum(is.na(x))}))
+
+# Manual inspection
+# preprint$Title[is.na(preprint$Type)]
+# preprint$Title[is.na(preprint$Collection)]
+# preprint$Title[is.na(preprint$Institutes_end)]
+
+# How many preprints did we manage to find on Altmetric?
+sum(!is.na(preprint$doi))
+
+# How many preprints did we manage to find the AAS of?
+sum(!is.na(preprint$score))
+
+# Ensure that there are no score cells with "" that could coax above number
+any(lapply(preprint$score, nchar) == 0, na.rm = T)
+
+# How many preprints did we have the ranking of?
+sum(complete.cases(preprint[, 31:50]))
+
+# For how many preprints did the title on bioRxiv and Altmetric exactly match?
+preprint[!is.na(preprint$doi), ] %>% 
+  with(setdiff(toupper(Title), toupper(title))) %>% 
+  length
+# [1] 457
+```
+
+We obtained 7760 from bioRxiv with a unique DOI. 10 of those records referred to duplicates (8 were recognised to be duplicates using title and author-matching and 2 were recognised to be duplicates by matching DOIs of their published counterpart), upon the exclusion of which were left with 7750 unique records. It is likely that more duplicates exist, but these should be very few and should in no way affect our conclusions.
+
+Out of 7750 records, we had a complete record of bioRxiv-related information for 7737 of them. 3 were missing publication type, 5 were missing subject area and 6 were missing institute of end-author. None of this missingness is significant enough to affect our conclusions. Originally, 69 preprints were missing subject area, but bioRxiv kindly corrected this when we brought it to their attention. 59 / 7750 records had not been registered by Altmetric, which as per Altmetric, means that they had not received any social media attention. Relevant information held by Altmetric were complete for all preprints that had been registered by Altmetric.
+
+Notice that for 457 records, the title on bioRxiv did not match the title on Altmetric. This was because of minor discrepancies, e.g. bioRxiv: "ON THE OPTIMAL TRIMMING OF HIGH-THROUGHPUT MRNASEQ DATA" vs Altmetric: "ON THE OPTIMAL TRIMMING OF HIGH-THROUGHPUT MRNA SEQUENCE DATA". I will not attempt to standardize this because it is not relevant to our data analysis.
+
+**Explanation of duplicates in the records I fetched from PubMed:** (1) 3 duplicates were due to those preprints being on bioRxiv twice ("10.1098/rsob.160009", "10.1016/j.ajhg.2015.03.004", "10.1111/jeb.12972" ), (2) 2 were duplicates because their DOI on PubMed was slightly different from that on bioRxiv, thus I mistakenly identified them as missing when I used `setdiff(articles.doi$DOI, doipub)` ("10.12688/F1000RESEARCH.7082.1", "10.1098/<U+200B>RSIF.2013.1095"), (3) 7 were duplicates because when I used `setdiff(articles.doi$DOI, doipub)` I did not use `toupper()` (e.g.  "10.1039/c5mb00693g" vs "10.1039/C5MB00693G") and (4) 1 was a duplicate because it was actually a duplicate on PubMed ("10.1099/mic.0.000418").
+
+Let us explore how we obtained our publication sample.
+
+```{r figure_1_post}
+# How many records did bioRxiv indicate had been published?
+nrow(pstprint)
+
+# How many articles did I find by searching PubMed by DOI with duplicates?
+# nrow(articles.doi)
+# [1] 2555
+
+# How many articles did I find by searching PubMed by DOI without duplicates?
+# sum(!duplicated(toupper(articles.doi$Title)))
+# [1] 2550
+
+# How many PMIDs did I discover manually?
+# length(man.pmid)
+# [1] 32
+
+# How many distinct records was I left with?
+sum(!is.na(pstprint$PMID))
+
+# How many records did we not have a PubMed record?
+nrow(pstprint) - sum(!is.na(pstprint$PMID))
+
+# How many of these did Altmetric have a record of?
+sum(!is.na(pstprint$doi))
+
+# How many of these did Altmetric have the AAS of?
+sum(!is.na(pstprint$score))
+
+# How many of these did we have complete ranking information for?
+sum(complete.cases(pstprint[, 36:55]))
+```
+
+2628 preprints had reached canonical publication by the time of our data extraction. 2550 of these we discovered on PubMed automatically by searching through PubMed by the DOI obtained from bioRxiv and 32 we discovered manually, by searching PubMed by the title obtained from bioRxiv. As such, we were able to isolate 2574 unique records that had been indexed on PubMed; 54 had not been indexed on PubMed. Of the 2628 published articles, Altmetric had the Altmetric Attention Score (AAS) for 2475 and complete ranking information for 2449.
+
+<p></p>
+
+# Preparation for data analysis
+
+The following code aims to prepare the main database of preprints, `preprint`, and the main database of published articles, `pstprint`, for further descriptive and statistical analysis.
+
+```{r pre_prep}
+# Create working data frames
+pre  <- preprint
+post <- pstprint
+
+# Data frame dimensions
+cat(sprintf("We have %s rows and %s columns", dim(pre)[1], dim(pre)[2]))
+
+# Remove terminal \n from Collection
+pre$Collection <- gsub("\n", "", pre$Collection)
+
+# Sort by date
+pre$First_Pub <- as.Date(pre$First_Pub, format = "%B %d, %Y")
+pre <- pre[order(pre$First_Pub), ]
+
+# Convert Current Publication to Date
+pre$Current_Pub <- as.Date(pre$Current_Pub, format = "%B %d, %Y")
+
+# Convert all numbers into numeric
+ind        <- c(16, 18, 27:50, 55:71, 73:78, 84:88, 91:94, 103:106)
+pre[, ind] <- apply(pre[, ind], 2, as.numeric)
+
+# Capitalize all characters to avoid potential capitalization mismatch errors
+ind        <- c(1:7, 11:14, 19:20, 72)
+pre[, ind] <- apply(pre[, ind], 2, toupper)
+
+# Identify how many titles contain UTF-8 characters (instead of ASCII)
+sum(grepl("[^ -~]", pre$Title))
+# [1] 129
+
+# Add a Year column
+pre$Year <- cut(pre$First_Pub, breaks = "year") %>% gsub(".{6}$", "", .)
+```
+
+129 titles contain characters that have not been converted from UTF-8 to ASCII. We decided to not convert these characters into ASCII because this lack of conversion should be consistent across titles and using titles is of no further relevance to our analysis. If we had decided to convert thse, command `iconv` is useful and so is package `stringi`. To use `stringi`, always denote the package, e.g. `stringi::stri_enc_mark(pre$Title[860])`. UTF-8 encoding is not affected by `toupper()`.
+
+```{r pre_missing}
+# Locate records with NA type
+na.type <- which(is.na(pre$Type))
+
+# Print index of these preprints
+cat("ID of missing type =", paste(na.type, collapse = ", "))
+
+# Print DOI of these preprints
+cat("DOI of missing type =", paste(pre$DOI[na.type], collapse = ", "))
+
+# Impute missing data
+pre$Type[na.type] <- rep("NEW RESULTS", 3)
+
+# Ascertain that no NAs are left in imputed column
+cat(sprintf("Number of NAs in imputed column = %s", sum(is.na(pre$Type))))
+
+
+
+# Locate records with NA Collection
+na.subj <- which(is.na(pre$Collection))
+
+# Print index of these articles
+cat("ID of missing collections =", paste(na.subj, collapse = ", "))
+
+# Print DOI of these articles
+cat("DOI of missing collections =", paste(pre$DOI[na.subj], collapse = ", "))
+```
+
+Upon manual inspection, bioRxiv indeed does not have any records for the Type of those 3 articles. We determined that those articles were of "New Results" by reading the abstract of those preprints.
+
+We initially had 69 records with missing Collection. We had tried to impute this, but by testing our ability to do this on preprints for which Collection was available, we were able to tell that our ability in doing so was very poor. Thus, we contacted bioRxiv, who were happy to correct their missing record. At the point of publication, there were still 5 records with missing Collection. This is a tiny number and we will not attempt to impute it.
+
+We will now follow the same process for the post-publication database `pstprint`.
+
+```{r post_prep}
+# Data frame dimensions
+cat(sprintf("We have %s rows and %s columns", dim(post)[1], dim(post)[2]))
+
+# Sort by date
+post <- post[order(post$Date), ]
+
+# Remove ID column (b/c it's only relevant to systematic reviews)
+post$ID <- NULL
+
+# Reorder columns to reflect pre
+post <- post[, c(3, 4, 1, 17, 2, 5, 6:16, 18:ncol(post))]
+
+# Convert all numbers into numeric
+ind <- c(4, 6, 21, 30:32, 35:54, 56, 65:83, 85 :86 , 
+         89:92, 97, 104, 108, 115:116, 132, 138:140, 143:144)
+
+post[, ind] <- apply(post[, ind], 2, as.numeric)
+
+# Capitalize all characters to avoid potential errors
+ind <- c(1:3, 7, 9, 10, 13:15, 17, 19:20,  26:29, 33:34,   59 :64 ,  84, 
+         87:88, 96, 98:99, 100:103, 105, 110:114, 118:129, 134:135, 137)
+
+post[, ind] <- apply(post[, ind], 2, toupper)
+
+# Identify how many titles from bio contain UTF-8 characters (instead of ASCII)
+sum(grepl("[^ -~]", post$Title))
+
+# Identify how many titles from Alt contain UTF-8 characters (instead of ASCII)
+sum(grepl("[^ -~]", post$title))
+```
+
+Note that Issue contains non-numeric characters (e.g. "3-4") and so does Volume (e.g. record 472 has volume "168B").
+
+The `post` database contains the information extracted from PubMed, as well as the information extracted from Altmetric about each published counterpart of bioRxiv preprints. Altmetric confirmed that missing Altmetric implies that the article has never been mentioned by media, thus its Altmetric Attention Score (AAS) is 0. I can relate this database to the `pre` database using the `preprint_doi` of `post` and the `DOI` column of `pre`.
+
+There were 34 Titles with UTF-8 characters on PubMed and 201 on Altmetric. As above, I will not convert UTF-8 to ASCII, as the method of extracting all titles is the same and I should not need to compare titles obtained from bioRxiv with titles obtained from Altmetric.
+
+```{r post_missing}
+# Identify missing records
+data.frame(Count = apply(post[, 1:20], 2, function(x){sum(is.na(x))}))
+
+# Visual inspection of missing 'Volume'
+# View(post[is.na(post$Volume), ])
+
+# Number missing both Issue and Volume
+sum(is.na(post$Issue) & is.na(post$Volume))
+
+# Number missing both Issue and Volume of those on PubMed
+sum(is.na(post$Issue) & is.na(post$Volume) & !is.na(post$PMID))
+
+# Identify missing Altmetric score
+sum(is.na(post$score))
+
+# Replace missing values of AAS with 0 (as per advice by Altmetric)
+pre$score[is.na(pre$score)]   <- 0
+post$score[is.na(post$score)] <- 0
+
+# Replace missing values of 'cited_by' counts with 0 for pre
+ind <- grep("cited_by", colnames(pre))
+pre[, ind][is.na(pre[, ind])] <- 0
+
+# Replace missing values of 'cited_by' counts with 0 for post
+ind <- grep("cited_by", colnames(post))
+post[, ind][is.na(post[, ind])] <- 0
+
+# Replace missing Year
+post$Year <- cut(post$Date, breaks = "year") %>% gsub(".{6}$", "", .)
+
+# Manually find and replace still missing Year
+post$Year[2627] <- 2016
+post$Year[2628] <- 2015
+```
+
+DOIs are not missing. Title, Author, Year, Journal, Abstract are missing for articles not on PubMed. Date is missing for 2 articles for which I could not identify an exact date from the actual article. It seems that Issue is missing for quite a few articles (776), which is reasonable, given that different journals index articles differently. Volume is missing for many less articles (87), which is reasonable, given that more journals utilize Volume in their indexing. Upon visual inspection, Volume was truly missing from the PubMed record and was not being utilized by the publisher to index that article. Volume and Issue were missing from 86 records in total, including 32 records fetched from PubMed. These were not the 32 papers I had identified on PubMed manually.
+
+Missing both Issue and Volume is unfortunate, because it makes finding issue-matched records through PubMed impossible. One way to circumvent this issue is to exclude these articles from that part of our study, which may introduce differential or non-differential measurement bias. This I suspect would actually be differential because certain journals systematically do not use these, e.g. eLife. For this reason, I decided to use Publication Date to specify articles published at roughly the same time by the same journal.
+
+Altmetric score was missing for 153 records, which as per Altmetric is consistent with those 153 records having an AAS of 0. doi is an 100% accurate measure of which artilces have been indexed by Altmetric.
+
+
+# Table 1: Descriptive table (pre)
+
+The followning chunk describes the frequency of bioRxiv publications.
+
+```{r pre_desc_freq}
+# Number of articles on bioRxiv
+num.all <- nrow(pre)
+
+# Count number of uploads per month
+by.month <- cut(pre$First_Pub, breaks = "months")
+
+# Create table of monthly uploads
+month.upload <- data.frame(table(by.month))
+month.upload
+
+# Overall monthly publication rate
+summary(month.upload$Freq)
+IQR(month.upload$Freq)
+sd(month.upload$Freq)
+
+# Yearly monthly publication rate
+gsub(".{6}$", "", month.upload$by.month) %>% by(month.upload$Freq, ., summary)
+gsub(".{6}$", "", month.upload$by.month) %>% by(month.upload$Freq, ., IQR)
+
+by(month.upload$Freq, month.upload$by.month, summary)
+
+# Create dataframe for plotting
+x <- as.Date(levels(by.month)[-1])
+y <- as.vector(table(by.month))[- nlevels(by.month)]
+date.count <- data.frame(Date = x, Count = y)
+
+# Plot using ggplot2
+ggplot(date.count, aes(Date, Count)) + 
+  geom_line(color = "#3182bd") + 
+  geom_area(fill  = "#3182bd", alpha = 0.6) + 
+  annotate("rect", xmin = x[27], xmax = x[28], ymin = 0, ymax = Inf, 
+           fill = "red", alpha = 0.5) + 
+  theme(axis.text.x  = element_text(angle = 0, hjust = 0.5, size = 9),
+        plot.title   = element_text(face = "bold", size = 20, vjust = 3), 
+        axis.title.x = element_text(face = "bold", margin = margin(t = 10)), 
+        axis.title.y = element_text(face = "bold", margin = margin(r = 10)),
+        panel.background = element_rect(fill = '#F2F2F2', color = 'white'),
+        plot.background  = element_rect(fill = '#F2F2F2', color = '#F2F2F2')) +
+  ggtitle("Time series of preprint counts") + 
+  scale_y_continuous(breaks=c(0,head(date.count$Count, 1),200,400,tail(date.count$Count, 1)))
+```
+
+I only included data up to the end of 2016 for this plot, because we did not have a complete record for 2017, which would lead to a misleading graph.
+
+There is an exponential increase in the publication of pre-prints in bioRxiv with `r table(by.month)[1]` in November 2013 to `r table(by.month)[length(table(by.month)) - 1]` in December, 2016. According to the time series, there was a sharp increase between February and March, 2016, which coincides with the establishment of ASAPbio, "a scientist-driven initiative to promote the productive use of preprints in the life sciences." More than half of the manuscripts now hosted in bioRxiv were published in 2016
+
+The following chunk quantifies type of articles. 
+
+```{r pre_desc_type}
+# Contingency table of types
+tab.typ <- as.vector(with(pre, table(Type)))
+
+# Proportions
+tab.typ / sum(tab.typ)
+
+# Numbers by year
+yr.type <- aggregate(by.year ~ Type, pre, table)
+yr.type
+
+# Proportions by year
+apply(yr.type[, - 1], 1, `/`, as.vector(table(by.year)))
+
+# Create quarters
+by.year  <- cut(pre$First_Pub, breaks = "years")
+
+# Drop levels that do not occur
+by.year <- factor(by.year)
+
+# Reshape data (I did not use 'melt' because I could not reorder Type)
+by.date <- with(pre, table(by.year, Type))
+by.date <- data.frame(by.date)
+imp.typ <- as.character(by.date$Type)
+order.d <- with(by.date, order(by.year, rev(imp.typ), decreasing = F))
+by.date <- by.date[order.d, ]
+
+# Rename by.year
+by.date$by.year <- gsub(".{6}$", "", by.date$by.year)
+
+# Plot data
+ggplot(by.date, aes(x = by.year, y = Freq, fill = Type)) + 
+  geom_bar(position = "fill", stat = "identity", alpha = 0.7) +
+  xlab("Year") + ylab("Percentage") + ggtitle("Distribution of type") +
+  guides(fill = guide_legend(title = "Types")) + 
+  theme(axis.text.x  = element_text(angle = 0, hjust = 0.5, size = 9),
+        plot.title   = element_text(face = "bold", size = 20, vjust = 3), 
+        axis.title.x = element_text(face = "bold", margin = margin(t = 10)), 
+        axis.title.y = element_text(face = "bold", margin = margin(r = 10)),
+        legend.title = element_text(face = "bold", margin = margin(0,0,50,0)), 
+        panel.background = element_blank())
+```
+
+The grand majority of results are classed as "New Results" (`r tab.typ[3]`, `r round(tab.typ[3]/sum(tab.typ) * 100,0)`%), followed by "Confirmatory Results" (`r tab.typ[1]`, `r round(tab.typ[1]/sum(tab.typ)*100,0)`%) and "Contradictory Results" (`r tab.typ[2]`, `r round(tab.typ[2]/sum(tab.typ)*100,0)`%). Based on the bar chart, the relative proportions of these three has remained roughly stable, even though one may have expected an increase of confirmatory/contradictory results over time.
+
+What topics do these articles feature?
+
+```{r pre_desc_collection}
+# Contingency table of Subject area
+tab.col <- with(pre, table(Collection))
+
+# Beautify table
+frm.col             <- data.frame(tab.col)
+names(frm.col)      <- c("Collection", "Frequency")
+frm.col             <- frm.col[order(-frm.col$Frequency), ]
+frm.col$Proportions <- round(prop.table(frm.col$Frequency) * 100, 2)
+frm.col
+
+# Yearly count of Subject area
+yr.subj <- aggregate(Collection ~ Year, pre, table)
+yr.subj$Collection
+
+# Yearly proportions of Subject Area
+apply(yr.subj[, - 1], 1, `/`, as.vector(table(pre$Year)))
+
+# Create a data frame of top 7 and label all others 'Other'
+sum.other  <- sum(frm.col[8:nrow(frm.col), "Frequency"])
+subj.other <- data.frame(Collection  = "OTHER", 
+                         Frequency   = sum.other, 
+                         Proportions = "")
+subj.small <- rbind(frm.col[1:7, ], subj.other)
+subj.small$Proportions[8] <- subj.small$Frequency[8] / sum(subj.small$Frequency) * 100
+subj.small$Proportions <- round(as.numeric(subj.small$Proportions), 1)
+
+# Create pie chart of relative Collection proportions with ggplot2
+ggplot(subj.small, aes(x = "", y = Frequency, fill = Collection))+
+  geom_bar(width = 1, stat = "identity", alpha = 0.6) + 
+  geom_text(aes(label = paste(Proportions, "%")), position = position_stack(vjust = 0.5)) + 
+  coord_polar("y", start = 0) + 
+  scale_fill_brewer(palette = "Blues") + 
+  xlab("") + ylab("") + ggtitle("Distribution of Subject Area") +
+  theme(axis.text = element_blank(),
+        plot.title   = element_text(face = "bold", size = 20, vjust = 3), 
+        legend.title = element_text(face = "bold", margin = margin(0,0,50,0)),
+        panel.grid = element_blank(),
+        panel.background = element_blank(),
+        plot.background  = element_rect(fill = '#F2F2F2', color = '#F2F2F2'),
+        legend.background = element_rect(fill = '#F2F2F2', color = '#F2F2F2'))
+  
+# Create pie chart of relative Collection proportions with plotly
+plot_ly(subj.small, labels = ~ Collection, values = ~ Frequency, 
+        type = 'pie', 
+        textposition = 'outside', 
+        textinfo     = 'label+percent',
+        opacity = 0.7) %>%
+  layout(title = "", showlegend = F,
+         xaxis = list(showgrid  = F, zeroline = F, showticklabels = F),
+         yaxis = list(showgrid  = F, zeroline = F, showticklabels = F),
+         plot_bgcolor  = 'rgb(242, 242, 242)', 
+         paper_bgcolor = 'rgb(242, 242, 242)')
+
+# Graph them all
+plot_ly(frm.col, labels = ~ Collection, values = ~ Frequency, 
+        type = 'pie', 
+        textposition = 'outside', 
+        textinfo     = 'label+percent',
+        opacity = 0.7) %>%
+  layout(title = "", showlegend = F,
+         xaxis = list(showgrid  = F, zeroline = F, showticklabels = F),
+         yaxis = list(showgrid  = F, zeroline = F, showticklabels = F),
+         plot_bgcolor  = 'rgb(242, 242, 242)', 
+         paper_bgcolor = 'rgb(242, 242, 242)')
+```
+
+I selected the top 8 Collections to show in the first Pie chart to make it more meaningful. There are stark differences between collections. The top 4 collections (`r paste(frm.col$Collection[1:4], collapse = ", ")`, `r round(4/nrow(frm.col),2)*100`%), account for more than 50% of the overall contribution to bioRxiv. It is clear that the more computational a discipline the more likely it is to publish in bioRxiv.
+
+Compare relative proportions of Subject Areas by year (excluding 2017).
+
+```{r pre_desc_collection_yr}
+# Create quarters
+by.year  <- cut(pre$First_Pub[pre$First_Pub < "2017-01-01"], breaks = "years")
+
+# Drop levels that do not occur
+by.year <- factor(by.year)
+
+# Reshape data
+by.date <- table(by.year, pre$Collection[pre$First_Pub < "2017-01-01"])
+by.date <- data.frame(by.date)
+
+# Order by year
+by.date <- by.date[order(by.date$by.year), ]
+
+# Order as per frm.col
+x1 <- as.numeric(rownames(frm.col))
+x2 <- seq(1,length(x1), 1)
+df <- data.frame(x1, x2)
+df <- df[order(x1), ]
+df <- rbind(df, df, df, df)
+
+# Final ordering
+by.date <- cbind(by.date, df)
+by.date <- by.date[order(by.date$by.year, by.date$x2), ]
+by.date <- by.date[, 1:3]
+
+# Rename columns
+colnames(by.date)[2] <- "Collection"
+
+# Plot data
+p <- ggplot(by.date, aes(x = by.year, y = Freq, fill = Collection)) 
+p <- p + geom_bar(position="fill", stat = "identity", alpha = 1)
+p <- p + xlab("Year") + ylab("Percentage") 
+p <- p + ggtitle("Distribution of collection")
+p <- p + guides(fill = guide_legend(title = "Collection"))
+p
+```
+
+Even though there are a few pre-prints in epidemiology, which constitute `r frm.col$Proportions[which(frm.col$Collection == "Epidemiology")]`% of the overall papers, most of these are methodologic studies; there are only `r frm.col$Frequency[which(frm.col$Collection == "Clinical Trials")]`. The graph did not reveal any stark consistent changes in the relative proportions of papers reaching bioRxiv from different disciplines. 
+
+It would be interesting to compare the relative proportions of Subject Areas on bi0Rxiv to their relative proportions in PubMed or Scopus to quantify the magnitude of the preferential use of bioRxiv by computationally-inclined disciplines.
+
+Change this graph to a time-series per month graph like so: https://goo.gl/images/ESV4au
+
+
+
+Which universities do these papers come from?
+
+```{r pre_desc_uni}
+# If I were to do this again, I would have used the following code
+# (this is because it is much simpler and would allow me to find AAS of each)
+
+# Extract the first university of end authors
+uni.end <- strsplit(pre$Institutes_End, ";") %>%
+           lapply(head, 1) %>%
+           unlist %>%
+           trimws("both")
+# 
+set.seed(2014)
+rd.ind <- by(1:7750, pre$Year, sample, 20, replace = F) %>%
+          unlist %>%
+          as.vector
+
+sample.uni <- uni.end[rd.ind]
+
+# Identify random preprints from 2014
+set.seed(2014)
+a.14 <- pre[which(pre$First_Pub < as.Date("2015-01-01")), ]
+a.14 <- pre[which(a.14$First_Pub > as.Date("2013-12-31")), ]
+a.14 <- unlist(strsplit(pre$Institutes_End, ";"))
+a.14 <- trimws(a.14, "both")
+
+sample.14 <- sample(a.14, 30)
+
+# Identify random preprints from 2015
+a.15 <- pre[which(pre$First_Pub < as.Date("2016-01-01")), ]
+a.15 <- pre[which(a.15$First_Pub > as.Date("2014-12-31")), ]
+a.15 <- unlist(strsplit(pre$Institutes_End, ";"))
+a.15 <- trimws(a.14, "both")
+set.seed(2015)
+
+sample.15 <- sample(a.15, 30)
+
+# Identify random preprints from 2016
+a.16 <- pre[which(pre$First_Pub < as.Date("2017-01-01")), ]
+a.16 <- pre[which(a.16$First_Pub > as.Date("2015-12-31")), ]
+a.16 <- unlist(strsplit(pre$Institutes_End, ";"))
+a.16 <- trimws(a.16, "both")
+set.seed(2016)
+
+sample.16 <- sample(a.16, 30)
+
+# Create sample
+sample.uni <- c(sample.14, sample.15, sample.16)
+
+# Export to Excel for manual identification
+# wb <- loadWorkbook("~/Desktop/Projects/Stanford/Research/bioRxiv/Analysis/Institute_v4.xlsx", create = TRUE) 
+
+# Name the sheet of the workbook
+# createSheet(wb, name = "Institute")
+
+# Print the dataframe 'REF.FRAME' into the workbook
+# (use rownames = "Row" only when I want to print the names of each row)
+# writeWorksheet(wb, sample.uni, sheet = "Institute", rownames = "Row")
+
+# Save the workbook
+# saveWorkbook(wb)
+
+# Import workbook
+man.uni <- read_excel("Institute_v4_Complete.xlsx") %>% data.frame()
+
+# Add year
+man.uni$Year <- rep(2013:2017, each = 20)
+
+# Format
+man.uni$Ranking <- as.numeric(man.uni$Ranking)
+
+# How many universities or university-affiliated institutes out of 100?
+sum(man.uni$University == "Yes", na.rm = T)
+# [1] 80
+
+# Cut by 20, 100 and 1000
+cat.rank <- cut(man.uni$Ranking, breaks = c(1, 20, 100, 1000))
+
+# Tabulate category by year
+aggregate(cat.rank ~ Year, man.uni, table)
+
+# Tabulate institute status by year
+aggregate(University ~ Year, man.uni, table)
+
+# How many of these were listed in first 1000 of general rankings?
+sum(!is.na(man.uni$Ranking) & man.uni$University == "Yes")
+# [1] 70
+
+# How many were in the top 100?
+sum(man.uni$Ranking <= 100, na.rm = T)
+# [1] 42
+
+# How many were in the top 20?
+sum(man.uni$Ranking <= 20, na.rm = T)
+# [1] 21
+```
+
+I used 2018 rankings from here: https://www.topuniversities.com/university-rankings/world-university-rankings/2018. When the university was within a range, e.g. 500-600, I used the midpoint, i.e. 550. When it was an institute belonging to two universities (e.g. Broad Institute of MIT and Harvard) I went for the midpoint. I need to consider that institutes that were universities for which there was no ranking had a ranking of > 1000 - thus their value is not missing at random and in fact missingness in this case would create an artificially biased lower mean value. When an institute clearly belongs to a university (e.g. Lawrence Berkeley Lab, Broad Institute, etc.) I used the ranking of that university. Even though UCSF is an exceptional university in the medical sciences, it was not ranked within the top 1000 institutes in the overall ranking.
+
+Out of a sample of 90 institutes, 30 from each of 2014-2016, 70 were universities or clearly university-affiliated institutes. Of these 70, 54 were ranked in the top 1000 institutes of the general rankings of QS, 33/54 were in the top 100 and 13/54 were in the top 20.
+
+We could improve on this analysis by measuring prestige by normalizing the institution's name using the Global Research Identifier Database (GRID) and dividing institutions in 3 prestige groups using Ratings by either THE or Top Universities. This was not done because this analysis is not of particular interest to our objectives.
+
+Cells for University status were left empty for those for which we were uncertain.
+
+<p></p>
+
+How many versions does the typical manuscript go through while on bioRxiv?
+
+```{r pre_desc_version}
+# Number of versions
+numver <- with(pre, strsplit(Previous_Pub[Duplicated == 0], ";"))
+numver <- lapply(numver, length)
+numver <- as.numeric(numver)
+numver <- numver + 1
+
+# Distribution of versions
+summary(numver)
+IQR(numver)
+sd(numver)
+
+# Median per year
+aggregate(numver ~ Year, pre[pre$Duplicated == 0, ], summary)
+
+# How many had only 1 version?
+sum(numver == 1)
+# [1] 5513
+
+# How many had 2 versions?
+sum(numver == 2)
+# [1] 1598
+
+# Boxplot of versions
+boxplot(numver, pch = 20, col = rgb(0,0,1,0.7))
+title(main = "Distribution of versions", ylab = "Frequency")
+
+# Histogram of versions
+hist(numver, col = rgb(0,0,1,0.7))
+
+# Number above 5
+above5 <- sum(numver > 5)
+```
+
+Most articles only go through a single version, or at most 2 (Median, 1; IQR, 1; Mean, 1.4; SD, 0.8). However, the distribution is highly skewed to the right with `r above5` having gone through more than 5 versions; the highest number of versions was `r max(numver)`.
+
+Notice that in studying versions, we excluded preprints that had had duplicated records on bioRxiv, to avoid introducing bias because of inaccurate versioning history.
+
+<p></p>
+
+# Table 2: Attention table
+
+<p></p>
+
+What is the usage of the abstract/pdf?
+
+```{r pre_views}
+# Identify inappropriate values for abstract views
+paste(head(sort(pre$Abstract_all, decreasing = T)), collapse = ", ")
+paste(head(sort(pre$Abstract_all, decreasing = F)), collapse = ", ")
+
+# Identify inappropriate values for abstract views
+paste(head(sort(pre$PDF_all, decreasing = T)), collapse = ", ")
+paste(head(sort(pre$PDF_all, decreasing = F)), collapse = ", ")
+
+# Summary of abstract count
+summary(pre$Abstract_all)
+# Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#  6.0    618.2    924.0   1571.6   1499.0 192570.0 
+summary(pre$PDF_all)
+# Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+#  2.0    173.0    321.0    600.3    596.0 151520.0 
+
+# Measures of variability
+with(pre, sd(PDF_all))
+with(pre, IQR(PDF_all))
+with(pre, sd(Abstract_all))
+with(pre, IQR(Abstract_all))
+
+# Median counts per Year
+aggregate(PDF_all ~ Year, pre, summary)
+aggregate(Abstract_all ~ Year, pre, summary)
+
+# Identify all preprints on bioRxiv for at least a month
+ind <- (as.Date("2017-01-17") - pre$First_Pub) > 29
+
+# Extract PDF downloads in first month on bioRxiv for all articles > 29
+lapply(pdf.tln[ind], `[`, 1) %>% unlist %>% summary
+
+# PDF downloads in first month on bioRxiv for all articles > 29 by year
+lapply(pdf.tln[ind], `[`, 1) %>% unlist %>% by(pre$Year[ind], summary)
+
+# Extract Abstract views in first month on bioRxiv for all articles > 29
+lapply(abs.count[ind], `[`, 1) %>% unlist %>% summary
+
+# Abstract views in first month on bioRxiv for all articles > 29 by year
+lapply(abs.count[ind], `[`, 1) %>% unlist %>% by(pre$Year[ind], summary)
+
+
+
+# Create data frame
+molten <- melt(pre, 
+               id.vars = "DOI", 
+               measure.vars = c("PDF_all", "Abstract_all"))
+
+# Rename
+data            <- molten$variable
+data            <- gsub("PDF_all", "PDF", data)
+molten$variable <- gsub("Abstract_all", "Abstract", data)
+
+# Boxplot with outliers
+boxplot(value ~ variable, 
+        data = molten,
+        pch = 20, # type of outlier dots
+        col = c(rgb(0,0,1,0.7), rgb(0,1,0,0.7)), # colour blue 
+        outline = T, # removes outliers if F
+        log = "y",
+        pars = list(outcol = "red")) # colour outliers
+
+# Add names to axes
+title(main = "Boxplot of views - with outliers", ylab = "Frequency")
+
+
+# Boxplot without outliers
+par(bg = '#F2F2F2')
+boxplot(value ~ variable, 
+        data = molten,
+        cex.axis = 0.8,
+        cex.lab  = 0.8,
+        pch = 20, # type of outlier dots
+        col = c(rgb(0.192,0.51,0.74,0.7), rgb(1,0,0,0.7)), # colour blue 
+        outline = F, # removes outliers if F
+        pars = list(outcol = "red")) # colour outliers
+
+# Add names to axes
+title(main = "Boxplot of views - without outliers", ylab = "Frequency")
+
+
+# Identify no. of outliers in boxplot
+length(boxplot(value ~ variable, molten)$out)
+# [1] 1398
+
+# Identify those with more than 10000 abstract views (2SDs)
+abs.out <- pre$Abstract_all > 10000
+tab.abs <- pre[abs.out, ]
+
+# Standardise by exposure on bioRxiv
+pdf.tln   <- strsplit(pre$PDF_monthly, ",")      %>% lapply(as.numeric)
+abs.count <- strsplit(pre$Abstract_monthly, ",") %>% lapply(as.numeric)
+
+# Identify all articles with exposures for > 6 months
+lgt.pdf <- lapply(pdf.tln, length)
+ind.lgt <- lgt.pdf > 5
+six.lgt <- unlist(lapply(pdf.tln[ind.lgt], `[`, 6))
+
+# Mean of these exposures
+hist(six.lgt, freq = T, breaks = c(0, 25, 50, 100, 4000), main = "",xlab = "")
+title(main = "Histogram of PDF reads at 6 months")
+title(xlab = "Number of views")
+
+# How many outliers were there per year?
+frst <- unlist(lapply(pdf.tln, `[`, 1))
+
+# Mean and standard deviation
+frst.mu <- mean(log(frst + 1))
+frst.sd <- sd(log(frst + 1))
+frst.2d <- frst.mu + qnorm(0.975) * frst.sd
+frst.vl <- exp(frst.2d)
+
+# Number of observations more than 2 standard deviations away
+ksd.ind <- frst > frst.vl
+ksd     <- sum(ksd.ind)
+
+
+# Extremes per year
+yrs         <- droplevels(cut(pre$First_Pub, breaks = "year"))
+levels(yrs) <- c("2013", "2014", "2015", "2016", "2017")
+wtd         <- yrs[ksd.ind]
+
+# Print
+table(wtd)
+round(table(wtd)/table(yrs), 3)
+
+# Average usage of pdf over first 3 months
+indx    <- lapply(pdf.tln, length) >= 3
+thrd    <- lapply(pdf.tln[indx], `[`, 1:3)
+mu.thrd <- mean(unlist(lapply(thrd, sum)))
+sd.thrd <- sd(unlist(lapply(thrd, sum)))
+me.thrd <- median(unlist(lapply(thrd, sum)))
+iqr.thrd <- IQR(unlist(lapply(thrd, sum)))
+
+# Average usage of pdf after first 3 months
+indx     <- lapply(pdf.tln, length) > 3
+athrd    <- lapply(pdf.tln[indx], `[`, -(1:3))
+mu.athrd <- mean(unlist(lapply(athrd, sum)))
+sd.athrd <- sd(unlist(lapply(athrd, sum)))
+me.athrd <- median(unlist(lapply(athrd, sum)))
+iqr.athrd <- IQR(unlist(lapply(athrd, sum)))
+
+# Average views per month for first year on bio
+a <- lapply(pdf.tln, length)
+b <- a > 11
+d <- lapply(pdf.tln[b], `[`, 1:12)
+e <- data.frame(d)
+x <- 1:12
+y <- apply(e, 1, sum)
+views.per.month <- data.frame(x, y)
+ggplot(views.per.month) + stat_smooth(aes(x = x, y = y), method = "lm", formula = y ~ poly(x, 5), se = T)
+```
+
+The median number of abstract reads was `r median(pre$PDF_all)` (IQR, `r IQR(pre$PDF_all)`) and the median number of PDF reads was `r median(pre$Abstract_all)` (IQR, `r round(IQR(pre$Abstract_all))`). There was a heavy right skew, even when we standardised for length since publication, by only examining number of reads at 6 months. This indicates that the right tail is not due to differential length of presence on bioRxiv. Given the monotonic exponential decay in number of reads, we decided to use the number of reads at first month to understand the distribution of outlying articles. By defining outliers as those with more than 2 standard deviations of the log mean above the log mean, we identified `r ksd` outliers. Most of these were published in 2016, but in proportion to the number of publications within each year, roughly 2% of the publications in years 2013 and 2014 and rougly 3% of the publications in 2015 and 2016 accummulated an extreme number of PDF accesses. The most accessed PDF belongs to a preprint titled `r pre$Title[which.max(pre$PDF_all)]` with `r max(pre$PDF_all)` accesses and was published in `r yrs[which.max(pre$PDF_all)]`. The most accessed abstract belongs to a preprint titled `r pre$Title[which.max(pre$Abstract_all)]` with `r max(pre$Abstract_all)` accesses and was also published in `r yrs[which.max(pre$Abstract_all)]`. In the first three months of being on bioRxiv, the mean is `r round(mu.thrd, 1)` (SD, `r round(sd.thrd, 1)`; Median, `r me.thrd`) whereas in the months after that, the mean is `r round(mu.athrd, 1)` (SD, `r `r round(sd.athrd, 1)`; Median, `r me.athrd`).
+
+In the future, use the last graph to analyze whether there a spike in views of bioRxiv preprint upon publication of that preprint?
+
+
+<p></p>
+
+Has the amount of usage been changing over time?
+
+```{r pre_views_by_time}
+# Initial count
+num.intl <- unlist(lapply(pdf.tln, `[`, 1))
+abs.first.month <- unlist(lapply(abs.count, `[`, 1))
+
+# Median number of Abstract views by year
+aggregate(abs.first.month ~ Year, pre, median)
+aggregate(abs.first.month ~ Year, pre, IQR)
+
+# Number of months
+num.mth  <- unlist(lapply(pdf.tln, length))
+
+# Plot boxplots to identify trend
+mth.ind <- num.mth %in% c(0, 10, 20, 30, 39)
+
+# Boxplot without outliers
+boxplot(num.intl[mth.ind] ~ num.mth[mth.ind], 
+        pch = 20, # type of outlier dots
+        col = c(rgb(0,0,1,0.7), 
+                rgb(0,1,0,0.7),
+                rgb(1,0,0,0.7),
+                rgb(0,0.5,0.5,0.7),
+                rgb(0.5,0.5,0.5,0.7)),
+        outline = F, 
+        pars = list(outcol = "red")) # colour outliers
+
+# Add names to axes
+title(main = "Boxplot of reads", 
+      ylab = "Frequency", 
+      xlab = "Time of publication (months ago)")
+
+# Summarise by month of publication
+by(num.intl, num.mth, summary)
+
+# Per month median
+int.med <- as.vector(by(num.intl, num.mth, median))
+
+# Build frame
+gdat <- data.frame(x = sort(unique(num.mth)), y = int.med)
+
+# Plot
+p <- ggplot(gdat, aes(x, y)) + geom_line()
+p <- p + labs(title = "Trend of first month views"
+              , y = "Number of views"
+              , x = "Months ago")
+p
+
+# Create yearly bins
+brks    <- c(0, 12, 24, 36, 40)
+mth.bks <- cut(num.mth, breaks = brks)
+
+# Summarise this
+by(num.intl, mth.bks, summary)
+
+# Identify median
+bks.med <- as.vector(by(num.intl, mth.bks, median))
+
+
+# Plot
+
+# Rename variable to avoid conflicts
+by.years <- mth.bks
+
+# Rename levels from months to years
+levels(by.years) <- c("2016", "2015", "2014", "2013")
+
+# Reorder levels to make the graph prettier
+by.years <- factor(by.years,levels(by.years)[4:1])
+
+# Create the data frame for ggplot
+first.month.views.per.year <- data.frame(Views = num.intl, Year = by.years)
+
+# Plot barplot without IQR 
+# ggplot(first.month.views.per.year) + 
+#   geom_bar(aes(Year, Views), stat = "summary", fun.y = "median")
+
+# Plot with IQR (could not calculate IQR automatically)
+new.frame <- data.frame(Year   = levels(by.years),
+                        Median = as.vector(by(num.intl, by.years, median)),
+                        Lower  = as.vector(by(num.intl, by.years, quantile, 0.25)),
+                        Upper  = as.vector(by(num.intl, by.years, quantile, 0.75)))
+
+ggplot(new.frame, aes(Year, Median)) + 
+  geom_col(fill  = "#3182bd", alpha = 0.7) +
+  geom_errorbar(aes(ymin = Lower, ymax = Upper), width = 0.1) + 
+  theme(axis.text.x  = element_text(angle = 0, hjust = 0.5, size = 9),
+        plot.title   = element_text(face = "bold", size = 16, vjust = 3), 
+        axis.title.x = element_text(face = "bold", margin = margin(t = 10)), 
+        axis.title.y = element_text(face = "bold", margin = margin(r = 10)),
+        panel.background = element_rect(fill = '#F2F2F2', color = 'white'),
+        plot.background  = element_rect(fill = '#F2F2F2', color = '#F2F2F2')) +
+  ggtitle("Median first-month PDF views per year")
+```
+
+It seems that the median times an article is accessed within the first month of publication has been steadily and roughly linearly increasing over the past years, with a median `r paste(round(sort(bks.med), 0), collapse = ", ")` in 2013-2016 respectively. 
+
+Usage count by collection.
+
+```{r pre_views_by_collection}
+# Describe summary by collection
+with(pre, by(PDF_all, Collection, summary))
+with(pre, by(Abstract_all, Collection, summary))
+
+# IQR of Paleontology
+IQR(pre$PDF_all[which(pre$Collection == "PALEONTOLOGY")])
+# [1] 426.5
+IQR(pre$Abstract_all[which(pre$Collection == "PALEONTOLOGY")])
+# [1] 715
+
+# IQR of CLINICAL TRIALS
+IQR(pre$PDF_all[which(pre$Collection == "CLINICAL TRIALS")])
+# [1] 671.5
+IQR(pre$Abstract_all[which(pre$Collection == "CLINICAL TRIALS")])
+# [1] 1812.5
+
+# Test for difference between groups 
+with(pre, kruskal.test(PDF_all, as.factor(Collection)))
+with(pre, kruskal.test(Abstract_all, as.factor(Collection)))
+```
+
+It seems that PDF and abstract count vary in a similar way between collections and that they differ between collections. Paleontology interestingly has the most highly accessed PDFs and abstracts and Clinical trials have the least accesed PDF and abstracts. The distribution of PDF accesses and abstract views is similar. The differences between collections are statistically significant using the non-parametric Kruskal-Wallis test.
+
+
+<p></p>
+
+What kind of AAS do these manuscripts have?
+
+```{r pre_altmetric}
+# Summarise
+summary(pre$score)
+
+# Summarise score by year
+aggregate(score ~ Year, pre, median)
+aggregate(score ~ Year, pre, quantile, 0.25)
+aggregate(score ~ Year, pre, quantile, 0.75)
+
+# Is AAS statistically significantly different by Year?
+summary(lm(score ~ factor(Year), pre))
+
+# Boxplots
+boxplot(pre$score, pch = 20, col = rgb(0,0,1,0.7), outline = F)
+title(main = "Altmetric scores without outliers", ylab = "Score")
+
+boxplot(pre$score, pch = 20, col = rgb(0,0,1,0.7)
+        , outline = T, pars = list(outcol = "red"))
+title(main = "Altmetric scores with outliers", ylab = "Score")
+
+# This does not work because it is attempting to log (0)
+# boxplot(pre$score, pch = 20, col = rgb(0,0,1,0.7)
+#         , outline = T, log = T, pars = list(outcol = "red"))
+# title(main = "Altmetric scores with outliers", ylab = "Score")
+
+# Histogram by ggplot2
+ggplot(pre, aes(log(score + 1))) +
+  geom_histogram(color = "white", fill  = "#3182bd", alpha = 0.7) + 
+  theme(axis.text.x  = element_text(angle = 0, hjust = 0.5, size = 9),
+        plot.title   = element_text(face = "bold", size = 16, vjust = 3), 
+        axis.title.x = element_text(face = "bold", margin = margin(t = 10)), 
+        axis.title.y = element_text(face = "bold", margin = margin(r = 10)),
+        panel.background = element_rect(fill = '#F2F2F2', color = 'white'),
+        plot.background  = element_rect(fill = '#F2F2F2', color = '#F2F2F2')) +
+  ggtitle("Histogram of Altmetric Attention Score") +
+  labs(x = "log (AAS + 1)", y = "Frequency")
+
+# Number of articles above 20 and proportions
+numalt <- sum(pre$score > 20)
+altprp <- mean(pre$score > 20)
+
+numalt100 <- sum(pre$score > 100)
+altprp100 <- round(mean(pre$score > 100)*100,2)
+
+# Proportions per year
+altyrs <- yrs[pre$score > 20]
+table(altyrs)
+round(table(altyrs) * 100/table(yrs[alt.ind]), 1)
+
+# AAS by year
+with(pre, by(score, cut(pre$First_Pub, breaks = "year"), summary))
+summary(lm(score ~  cut(pre$First_Pub, breaks = "year"), pre))
+```
+
+The median altmetric score is `r round(median(pre$score), 1)` (IQR, `r round(IQR(pre$score), 1)`) and the mean altmetric score is `r round(mean(pre$score), 1)` (SD, `r round(sd(pre$score), 1)`). Scores varied across a wide range with with 0 being the lowest score seen and `r round(max(pre$score, na.rm = T),0)` being the highest. The highest score was attained in `r yrs[which.max(pre$score)]`, by the same article with the highest number of reads, titled "`r pre$Title[which.max(pre$score)]`". The distribution of altmetric scores closely mimics that of number that a PDF has been accessed, with a heavy right skew. 
+
+According to Altmetric, "in general if an article scores 20 or more then it's doing far better than most of its contemporaries." Out of the bioRxiv articles published until the end of 2016, `r numalt` (`r round(altprp*100,1)`%) exceeded this score and `r numalt100` (`r altprp100`%) exceeded an altmetric score of 100. By year, `r paste(as.vector(table(altyrs)), collapse = ", ")` (`r paste(round(table(altyrs) * 100/table(yrs[alt.ind]), 1), collapse = "%, ")`%) exceeded this score in 2013-2016 respectively.
+
+Look here for the Altmetric score dictionary: http://api.altmetric.com/docs/call_citations.html. RH refers to research highlights and qna refers to question and answer websites. This is an interesting article about the Altmetric score: http://journals.plos.org/plosone/article?id=10.1371/journal.pone.0064841
+
+Does AAS vary by types of characteristic on bioRxiv?
+
+```{r pre_altmetric_by_various}
+# Attention by Publication type
+aggregate(score ~ Type, pre, median)
+aggregate(score ~ Type, pre, quantile, 0.25)
+aggregate(score ~ Type, pre, quantile, 0.75)
+
+# How confident are we that these are different?
+summary(lm(score ~ factor(Type), pre))
+
+
+# Attention by Subject Area
+aggregate(score ~ Collection, pre, median)
+aggregate(score ~ Collection, pre, quantile, 0.25)
+aggregate(score ~ Collection, pre, quantile, 0.75)
+
+# Identify median and quartiles of 'Other' Subject Area
+high.subj <- c("BIOINFORMATICS", "EVOLUTIONARY BIOLOGY",  "GENETICS", 
+               "GENOMICS", "NEUROSCIENCE", "ECOLOGY", "MICROBIOLOGY")
+
+median(pre$score[!pre$Collection %in% high.subj])
+quantile(pre$score[!pre$Collection %in% high.subj], 0.25)
+quantile(pre$score[!pre$Collection %in% high.subj], 0.75)
+
+# How confident are we in the difference in ASS between Collections?
+summary(lm(score ~ factor(Collection), pre))
+
+
+# Attention by University ranking
+
+
+# Attention by Publiation status
+aggregate(score ~ !is.na(DOI_Pub), pre, median)
+aggregate(score ~ !is.na(DOI_Pub), pre, quantile, 0.25)
+aggregate(score ~ !is.na(DOI_Pub), pre, quantile, 0.75)
+
+# How confident are we in the difference in AAS between statuses?
+summary(lm(score ~ !is.na(DOI_Pub), pre))
+
+
+# Attention by Abstract views
+summary(lm(score ~ Abstract_all, pre))
+
+
+# Attention by PDF views
+summary(lm(score ~ PDF_all, pre))
+
+
+# Attention by citations
+summary(lm(score ~ thecitations, pre))
+
+```
+
+
+Does AAS vary with field of study?
+
+```{r pre_altmetric_by_collection}
+# Summarise AAS by subject area
+with(pre, by(score, Collection, summary))
+
+# Obtain median and IQR of AAS by area
+aas.median  <- with(pre, by(score, Collection, median))
+aas.lower   <- with(pre, by(score, Collection, quantile, 0.25))
+aas.upper   <- with(pre, by(score, Collection, quantile, 0.75))
+
+# Create data frame for plotting
+dat.aas.area <- data.frame(Area   = names(aas.median),
+                           Median = as.vector(aas.median),
+                           Lower  = as.vector(aas.lower),
+                           Upper  = as.vector(aas.upper))
+
+# Turn Area into factor to coerce order of columns in ggplot2
+dat.aas.area$Area <-  factor(dat.aas.area$Area,
+                             levels = names(sort(aas.median)))
+
+# Take the first two initials of each subject to create x axis
+x.axis <- substr(levels(dat.aas.area$Area), 1, 2)
+
+# Plot
+ggplot(dat.aas.area, aes(Area, Median)) + 
+  geom_col(fill  = "#3182bd", alpha = 0.7) +
+  geom_errorbar(aes(ymin = Lower, ymax = Upper), width = 0.2) + 
+  theme(axis.text.x  = element_text(angle = 0, hjust = 0.5, size = 9),
+        plot.title   = element_text(face = "bold", size = 16, vjust = 3), 
+        axis.title.x = element_text(face = "bold", margin = margin(t = 10)), 
+        axis.title.y = element_text(face = "bold", margin = margin(r = 10)),
+        panel.background = element_rect(fill = '#F2F2F2', color = 'white'),
+        plot.background  = element_rect(fill = '#F2F2F2', color = '#F2F2F2')) +
+  ggtitle("Median AAS by subject area") +
+  scale_x_discrete(labels = x.axis)
+
+# Statistical difference in Altmetric between areas?
+summary(lm(score ~ Collection, pre))
+```
+
+
+Which aspect of the composite score drove the AAS most?
+
+```{r pre_composite}
+# Identify all columns contributing to composite score
+ind <- grep("cited_by", colnames(pre))
+
+# Create descriptive table of means for all counts
+apply(pre[, ind], 2, mean, na.rm = T)
+apply(pre[, ind], 2, median, na.rm = T)
+apply(pre[, ind], 2, IQR, na.rm = T)
+```
+
+Preprints on bioRxiv were most referenced by posts (Mean, 23.0; Median, 12; IQR, 16), then by other accounts (Mean, 20.2; Median, 11; IQR, 15) and then by Twitter (Mean, 19.5; Median, 11; IQR, 14). The contribution of all other media was minimal (mean < 5; median < 1; IQR < 2). 
+
+<p></p>
+
+How many citations have these preprints received?
+
+```{r pre_citations}
+# Extract citations from CrossRef (takes 45-50 min)
+# thecitations <- pblapply(pre$DOI, getCitations) %>% unlist()
+
+# Summarise
+summary(thecitations)
+sd(thecitations, na.rm = T)
+
+# How many where cited more than zero?
+nonzero.cite <- length(which(thecitations > 0))
+nonone.cite  <- length(which(thecitations > 1))
+
+# Summarize non-zero citations
+summary(thecitations[thecitations > 0])
+IQR(thecitations[which(thecitations > 0)])
+sd(thecitations[which(thecitations  > 0)])
+
+# Summarise by Year
+aggregate(thecitations ~ Year, pre, FUN = summary)
+aggregate(thecitations ~ Year, pre, FUN = mean)
+aggregate(thecitations ~ Year, pre, FUN = sd)
+```
+
+Extracting citations for all preprints would take roughly 45-50 minutes. This analysis we last run on 16 September, 2017, at which point we identified that `r nonzero.cite` out of 7550 had been cited at least once and `r nonone.cite` at least twice. Out of preprints cited at least once, the median preprint had been cited 1 time (IQR, 1) and the mean preprint 1.7 times (SD, 1.6). We did not try to identify where these citations came from, but up to roughly May 2017, there had been no citations.
+
+<p></p>
+
+# Table 3: Descriptive table (post)
+
+Create a descriptive table for the article on this.
+
+```{r post_author}
+# Number of authors per article
+no.auth <- lengths(regmatches(post$Author, gregexpr(",", post$Author))) + 1
+
+# Summarise
+summary(no.auth)
+
+# Variance
+IQR(no.auth)
+
+# How many articles had only 1 author?
+sum(no.auth == 1)
+# 161
+
+# Which article had the maximum number?
+post$Title[which.max(no.auth)]
+```
+
+The median article had 4 authors (IQR, 4) with a right skew (Mean, 7.4). 161 articles had only 1 author and the maximum number of authors was 706 in the article titled "HUMAN GENOMIC REGIONS WITH EXCEPTIONALLY HIGH LEVELS OF POPULATION DIFFERENTIATION IDENTIFIED FROM 911 WHOLE-GENOME SEQUENCES."
+
+```{r post_type}
+# Identify type of published articles
+table(post$Pub_type)
+
+# Identify how many of the bioRxiv articles were review articles
+length(grep("REVIEW", post$Pub_type))
+# [1] 88
+
+# Identify how many of the bioRxiv articles were meta-analyses
+length(grep("META-ANALYSIS", post$Pub_type))
+# [1] 14
+```
+
+Out of 2628 published articles, 88 had been classified by PubMed as 'Review', 14 as 'Meta-analysis', 6 had been classified as 'Comment', 1 as 'Editorial' and 1 'Published Erratum'.
+
+In how many journals have they published?
+
+```{r post_journal}
+# How many journals are missing?
+sum(is.na(post$Journal))
+# [1] 54
+
+# Count number of journals
+length(unique(post$Journal))
+
+# In which journal do most published preprints end up?
+table(post$Journal)[which.max(table(post$Journal))]
+```
+
+Assuming same name for same journal, the 2628 - 54 = 2574 for which we have the Journal, were published in 422 different journals.
+
+Describe how Altmetric changes over years.
+
+```{r post_altmetric}
+# Altmetric score across years
+aggregate(score ~ Year, post, mean)
+aggregate(score ~ Year, post, median)
+aggregate(score ~ Year, post, IQR)
+aggregate(score ~ Year, post, summary)
+summary(post$score)
+```
+
+AAS appears to vary in a similar fashion across years, apart from articles published in 2012 and 2013, which attracted a significantly smaller AAS.
+
+What was the contribution of each media type to the AAS?
+
+```{r post_composite}
+# Identify all columns contributing to composite score
+ind <- grep("cited_by", colnames(post))
+
+# Create descriptive table of means for all counts
+sort(apply(post[, ind], 2, mean, na.rm = T), decreasing = T)
+sort(apply(post[, ind], 2, median, na.rm = T), decreasing = T)
+sort(apply(post[, ind], 2, IQR, na.rm = T), decreasing = T)
+```
+
+As for preprints, the relative contributions of media sides remained similar. Most mentions were seen by account posts (Mean, 32.0; Median, 13; IQR, 26), then by other accounts (Mean, 28.2; Median, 12; IQR, 22) and then by Twitter (Mean, 25.1; Median, 11; IQR, 20). The count for all other measures remained minimal (Mean < 8; Median < 3; IQR < 8).
+
+<p></p>
+
+Describe citations of published articles and how this changes over years.
+
+```{r post_citations}
+# Extract citations from CrossRef (takes ~10 min) - 29/11/2017
+# post.cite <- pblapply(post$DOI, getCitations) %>% unlist()
+
+# Summarise
+summary(post.cite)
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+# 0.00    2.00    5.00   13.26   12.00 2310.00       7 
+
+sd(post.cite, na.rm = T)
+
+# Summarise by Year
+# Summarise by Year
+aggregate(post.cite ~ Year, post, FUN = summary)
+aggregate(post.cite ~ Year, post, FUN = mean)
+aggregate(post.cite ~ Year, post, FUN = sd)
+```
+
+# Table 4: Publication table
+
+This table explores what happens to preprints uploaded on bioRxiv.
+
+How many of these papers actually reach publication?
+
+```{r pre_pub}
+# Percentage with publication
+numpub <- pre$DOI_Pub
+sumpub <- sum(!is.na(numpub))
+prppub <- mean(!is.na(numpub))
+
+# By year
+yrs  <- droplevels(cut(pre$First_Pub, breaks = "year"))
+levels(yrs) <- c("2013", "2014", "2015", "2016", "2017")
+by.y <- yrs[!is.na(numpub)]
+
+# Print
+pub.freq  <- table(by.y)
+by.y
+# 2013 2014 2015 2016 2017 
+#   63  525  963 1077    0 
+pub.ratio <- table(by.y)/table(yrs) * 1000
+
+# Create data frame for plotting
+pub.desc <- data.frame(Year   = rep(levels(yrs), 2),
+                       Group  = rep(c("Percent", "Count"), each = nlevels(yrs)),
+                       Value  = c(-pub.ratio, pub.freq),
+                       Labels = c(paste0(round(pub.ratio/10), "%"), pub.freq))
+
+# Remove 2017 because it is 0 and is causing problems with plotting
+pub.desc <- pub.desc[pub.desc$Year != "2017", ]
+
+# Plot
+ggplot(pub.desc, aes(x = Year, y = Value, fill = Group)) + 
+  geom_bar(stat = "identity", position = "identity") + 
+  geom_text(aes(label = Labels, y = Value+40*Value/abs(Value)), vjust = 0.5) + 
+  theme(axis.text.x  = element_text(angle = 0, hjust = 0.5, size = 9),
+        plot.title   = element_text(face = "bold", size = 18, vjust = 3), 
+        axis.title.x = element_text(face = "bold", margin = margin(t = 10)), 
+        axis.title.y = element_text(face = "bold", margin = margin(r = 10)),
+        axis.text.y  = element_blank(),
+        axis.ticks.y = element_blank(),
+        panel.background = element_rect(fill = '#F2F2F2', color = 'white'),
+        plot.background  = element_rect(fill = '#F2F2F2', color = '#F2F2F2'),
+        legend.background = element_rect(fill = '#F2F2F2', color = '#F2F2F2')) +
+  ggtitle("Publication per year") + 
+  labs(fill = "")
+```
+
+Even though overall only `r sumpub` have been published (`r round(prppub, 1)`%) so far, this trend is largely driven due to preprints of 2016, for which it would be too early to reach publication. In fact, more than half of the papers submitted between 2013-2015 have been published. 
+
+How long after reaching bioRxiv does it take for a preprint to reach peer-reviewed publication?
+
+```{r post_date}
+# Identify the date of preprint publication and order as per post
+bio.date <- pre$First_Pub[match(post$preprint_doi, pre$DOI)]
+
+# Calculate date difference
+date.diff <- post$Date - bio.date
+
+# Visualize
+hist(as.numeric(date.diff))
+boxplot(as.numeric(date.diff))
+
+# Summarise
+summary(as.numeric(date.diff))
+
+# IQR
+IQR(date.diff, na.rm = T)
+
+# How many got published before bioRxiv?
+sum(date.diff < 0, na.rm = T)
+# [1] 35
+
+# When were these uploaded?
+table(pre$Year[match(post$DOI[date.diff < 0], pre$DOI_Pub)])
+
+# Proportion of preprints uploaded after publication per year
+post$preprint_doi[which(date.diff < 0)] %>%
+  match(pre$DOI) %>%
+  extract(pre$Year, .) %>%
+  table() %>%
+  divide_by(table(pre$Year[!is.na(pre$DOI_Pub)])[-5])
+
+# When did these publications occur?
+post$Date[date.diff < 0]
+
+# Quantify by year
+post$Date[date.diff < 0] %>% 
+  na.omit() %>% 
+  cut(breaks = "years") %>% 
+  table()
+
+# How many publications did we have by year?
+post$Date %>% cut(breaks = "years") %>% table()
+```
+
+The average article that eventually gets published, gets published after being accessible on bioRxiv for 4-6 months. The longest lag time from publication on bioRxiv to getting published in a peer-reviewed journal was almost 2.5 years. 34 articles were apparently published on bioRxiv after publication on pubmed.
+
+The two NAs belong to the two published reports of which the exact publication date I could not locate.
+
+
+What percentage gets published within first year of appearance on bioRxiv?
+
+```{r post_1year}
+# Define function to avoid Global Environment
+propPublished <- function(days = 365){
+  
+  # Select wanted columns from pre and post
+  pre.col <- pre [, c("DOI", "First_Pub")]
+  pst.col <- post[, c("preprint_doi", "Date")]
+  
+  # Merge
+  dat <- merge(pre.col, pst.col, by.x = "DOI", by.y = "preprint_doi", all = T)
+  
+  # Calculate difference in dates
+  dif <- with(dat, Date - First_Pub)
+  
+  # Identify eligible preprints
+  ind <- dat$First_Pub < (as.Date("2017-01-17") - days)
+  
+  # Calculate proportion of those published within days out of all eligible
+  sum(dif[ind] < days, na.rm = T) / sum(ind)
+}
+
+propPublished(days = 365)
+propPublished(days = 180)
+```
+
+The value decreases with less available days, which makes sense. The data frame that the formula calculates is also correct (by manually searching through a few of the dates). When I used the function that I used for the abstract, I obtained the same result. This means that the difference in value is due to (1) having now recognised more duplicates and (2) having now extracted more dates of published papers, that were previously not available. The previous value for publication within a year of being posted was 35.7%, whereas now this is 50.5%.
+
+We will also use a Kaplan-Meier analysis to identify risk of publication to peer-reviewed literature at 12 and 24 months. The Kaplan-Meier method calculates the empirical probability of surviving past certain times in the sample, taking into account censoring (the probability of publication (i.e. death) is 1 - probability of survival (i.e. no publication) and is known as the hazard rate). If there was no censoring, the KM estimate would just be the proportion surviving in the study.
+
+```{r pre_pub_Kaplan_Meier}
+# Calculate time to publication or censoring in days
+
+propSurvive <- function(days = 365){
+  
+  # Select wanted columns from pre and post
+  pre.col <- pre[, c("DOI", "First_Pub")]
+  pst.col <- post[, c("preprint_doi", "Date")]
+  
+  # Merge
+  dat <- merge(pre.col, pst.col, by.x = "DOI", by.y = "preprint_doi", all = T)
+  
+  # Identify publication status (true = Publication)
+  isPublished <- !is.na(dat$Date)
+  
+  # Replace NAs in Date with date of search
+  dat$Date[is.na(dat$Date)] <- as.Date("2017-01-16")
+  
+  # Identify time to publication or censoring in days
+  time <- with(dat, Date - First_Pub)
+  
+  # Kaplan-Meier analysis for risk of publication to peer-reviewed literature
+  surv.fit <- survfit(Surv(time, isPublished) ~ 1)
+  
+  # Plot curve
+  plot(surv.fit, main = "KM-curve", xlab = "Days on bioRxiv", 
+       ylab = "% Published", lwd = 1.5)
+  
+  # Probability of publication (i.e. no survival) by the chosen duration
+  round(1 - surv.fit$surv[surv.fit$time >= days][1], 3) * 100
+  # (1 - surv b/c we are interested in probability of event)
+}
+
+propSurvive(365) # [1] 48.0
+propSurvive(365 * 2) # [1] 55.5
+
+# Analyse publication by duration of time until publication
+timeToPub <- function(breaks = c(-Inf,0, 365, 730, 365*3, Inf)){
+  
+  # Select wanted columns from pre and post
+  pre.col <- pre[, c("DOI", "First_Pub")]
+  pst.col <- post[, c("preprint_doi", "Date")]
+  
+  # Merge
+  dat <- merge(pre.col, pst.col, by.x = "DOI", by.y = "preprint_doi", all = T)
+  
+  # Identify publication status (true = Publication)
+  isPublished <- !is.na(dat$Date)
+  
+  # Replace NAs in Date with date of search
+  dat$Date[is.na(dat$Date)] <- as.Date("2017-01-16")
+  
+  # Identify time to publication or censoring in days
+  time <- with(dat, Date - First_Pub)
+  
+  # Levels
+  per.year <- table(cut(as.numeric(a), breaks = breaks))
+  
+  # Summary statistics
+  time.sum <- summary(as.numeric(time))
+  
+  x <- list(per.year, time.sum)
+  names(x) <- c("Per year count", "Time to publication summary")
+  x
+}
+
+timeToPub()
+# $`Per year count`
+# 
+#       (-Inf,0]        (0,365]      (365,730]  (730,1095] 
+#             38           2429            157              2 
+# (1095, Inf] 
+#              0 
+# 
+# $`Time to publication summary`
+#    Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+#  -526.0    82.0   166.0   234.6   297.0  1166.0 
+
+
+# How many same year publications were there?
+sameYearPub <- function(x){
+  # Select wanted columns from pre and post
+  pre.col <- pre[, c("DOI", "First_Pub")]
+  pst.col <- post[, c("preprint_doi", "Date")]
+  
+  # Merge
+  dat <- merge(pre.col, pst.col, by.x = "DOI", by.y = "preprint_doi", all = T)
+  
+  # Omit unpublished preprints
+  dat <- na.omit(dat)
+  
+  # Convert into years
+  dat$First_Pub <- format(dat$First_Pub, "%Y")
+  dat$Date <- format(dat$Date, "%Y")
+  
+  # Calculate percentage published in same year
+  with(dat, mean(First_Pub == Date))
+}
+
+sameYearPub()
+# [1] 0.6142422
+```
+
+By the Kaplan-Meier method, the risk of publication in the peer-reviewed literature was 48.1% and 55.5% at 12 and 24 months after bioRxiv posting, respectively. 
+
+For more details on the formula we used to calculate the above survival inspect the arguments of our object by running the following `?survival.object`. 
+
+# Does AAS predict publication?
+
+```{r post_predict_publication, eval = FALSE}
+# Summary of AAS per publication status
+with(pre, by(score, +!is.na(DOI_Pub), summary))
+
+# Is the difference in AAS between pub status significantly different?
+summary(lm(score ~ +!is.na(DOI_Pub), pre))
+
+# Identify correlation between publication and AAS
+with(pre, cor(+!is.na(DOI_Pub), score))
+
+# Plot
+plot(pre$score, +!is.na(pre$DOI_Pub), pch = 20, col = rgb(0,0,1,0.7))
+abline(lm(+!is.na(pre$DOI_Pub) ~ pre$score), col = "red")
+title(main = "Scatter plot of AAS vs getting published")
+
+# How long has this article been on bioRxiv?
+on.biorxiv <- as.numeric(as.Date("2017-01-17") - pre$First_Pub)
+
+# Summarise duation on bioRxiv
+summary(on.biorxiv)
+
+# Summarise AAS per quantile of duration on bioRxiv
+on.biorxiv %>% 
+  quantile(c(0, 0.25, 0.5, 0.75, 1)) %>% 
+  cut(on.biorxiv, breaks = .) %>%
+  by(pre$score, ., summary)
+
+# Summarise AAS per quantile of PDF views
+pre$PDF_all %>% 
+  quantile(c(0, 0.25, 0.5, 0.75, 1)) %>% 
+  cut(pre$PDF_all , breaks = .) %>%
+  by(pre$score, ., summary)
+
+# Is duration of being on bioRxiv correlated with altmetric score?
+cor(pre$score, on.biorxiv)
+# [1] -0.02135384
+
+# Summarise PDF views per publication status
+with(pre, by(PDF_all, +!is.na(DOI_Pub), summary))
+
+# Summarise Collection count per publication status
+area.pub <- aggregate(!is.na(pre$DOI_Pub), list(pre$Collection), table)
+area.pub <- cbind(area.pub[, 1], as.data.frame(area.pub[, 2]))
+colnames(area.pub) <- c("Area", "Unpublished", "Published")
+area.pub$Proportion <- with(area.pub, Published / (Published + Unpublished))
+area.pub <- area.pub[order(area.pub$Proportion, decreasing = T), c(1, 3, 2, 4)]
+
+
+# Cox regression to quantify the effect of predictors on rate of publication
+
+# Create survival object (time of follow-up vs publication status)
+survobj <- Surv(on.biorxiv, !is.na(pre$DOI_Pub))
+
+# Fit Cox Regression
+cox.fit1 <- coxph(survobj ~ score, data = pre)
+cox.fit2 <- coxph(survobj ~ score + Collection, data = pre)
+cox.fit3 <- coxph(survobj ~ score + Collection + PDF_all, data = pre)
+
+# Summarise fits
+summary(cox.fit1)
+summary(cox.fit2)
+summary(cox.fit3)
+
+# Confidence intervals 
+exp(confint(cox.fit2))
+
+# Calculate coefficient and CI per 10 units of AAS
+exp(0.001550 * 10)
+exp((0.001550 + qnorm(0.975) * 0.000241) * 10)
+exp((0.001550 - qnorm(0.975) * 0.000241) * 10)
+
+# Assumptions of survival analysis by Cox
+# 1. Plot log-log
+plot(survfit(cox.fit2, pre, fun = "cloglog", col = 3, lwd = 2), col = c(3, 4))
+title(ylab = "-log(log(S(t)))", xlab = "t", main = "Log-log plot")
+legend("bottomright", legend = c("Published","Not published"), lty = 1, col = c(3, 4))
+
+# 2. Plot Shoenfeld residuals
+res.shoenfeld <- cox.zph(cox.fit2)
+plot(res.shoenfeld, pch = 19, col = "blue1")
+
+# 3. Regress Schoenfeld residuals against time
+time      <- numyear[isevent == 1]
+residuals <- residuals(cox.fit, type = "schoenfeld")
+summary(lm(time ~ residuals))
+
+# Logistic regression to quantify predictors of publication status within sample
+
+# Fit model
+glm.fit1 <- glm(!is.na(DOI_Pub) ~ score + Collection, pre, family = binomial)
+glm.fit2 <- glm(!is.na(DOI_Pub) ~ score + Collection + on.biorxiv, pre, family = binomial)
+
+# Summarise model
+summary(glm.fit1)
+summary(glm.fit2)
+
+# Exponential coefficients
+exp(coef(glm.fit1))
+exp(coef(glm.fit2))
+
+# Confidence intervals
+exp(confint(glm.fit1))
+exp(confint(glm.fit2))
+```
+
+Descriptive statistics indicate that the AAS of those articles reaching publication is slightly higher than those that do not. However, AAS does not seem to change over time, because articles of different years seem to have very similar AAS. AAS increases with number of PDF views, as would be expected and differs appreciably between subject areas. 
+
+Descriptive statistics indicate that publication status differs between Collections, with Evolutionary Biology having an appreciably high eventual publication (440 / 1055, 42%) vs Pathology, which had the least (3 / 17, 15%). Articles reaching publication had on average almost double the mean number of views, even though this metric is biased because more time on bioRxiv means more views and a higher probability of getting published.
+
+In fact, the two articles with highest altmetric score in our sample did not get published. Cox regression identified that the effect size of Altmetric score is tiny, even though statistically significant. Articles seem to attract a lot more attention after publication than on bioRxiv, with a mean pairwise difference of 14.1 (95% CI, 10.7-17.5) from bioRxiv to canonical publication and a p-value of = 4.81*10^-16. Average Altmetric Attention Score (AAS)  post-publication is 30.5 (Median 8.4; IQR, 19.7) and pre-publication is 14.7 (Median, 7.2; IQR, 12.7). The significant difference was confirmed using the non-parametric Wilcoxon signed rank test with continuity correction.
+
+We chose model cox.fit2 because PDF and abstract views are collinear wity AAS.
+
+TREAT ALL OF MY ANALYSES USING THE PRINCIPLES OF LASSO TO SELECT VARIABLES AND CAUSAL INFERENCE. I DO NOT LIKE HOW THE ABOVE ANALYSES WERE DONE.
+
+
+
+# Table 5: Pre vs Post AAS
+
+How does pre-publication altmetric compare to post-publication?
+
+```{r pre_vs_post_aas}
+# Summary of AAS before and after
+summary(pre$score)
+summary(post$score)
+
+# IQR
+IQR(pre$score)
+IQR(post$score)
+
+# Compare pre and post-publication AAS
+dat.aas <- merge(pre[, c("DOI_Pub", "score")], post[, c("DOI", "score")], 
+                 by.x = "DOI_Pub", by.y = "DOI")
+
+# Rename columns
+colnames(dat.aas)[2:3] <- c("Preprint", "Postprint")
+
+# Plot pre vs post AAS scatterplot
+ggplot(dat.aas, aes(Preprint, Postprint)) + 
+  geom_point(color  = "#3182bd", alpha = 0.6) + 
+  theme(plot.title   = element_text(face = "bold", size = 18, vjust = 3), 
+        axis.title.x = element_text(face = "bold", margin = margin(t = 10)), 
+        axis.title.y = element_text(face = "bold", margin = margin(r = 10)),
+        panel.background = element_rect(fill = '#F2F2F2', color = 'white'),
+        plot.background  = element_rect(fill = '#F2F2F2', color = '#F2F2F2')) +
+  ggtitle("Preprint against post-print AAS")
+
+# Create data frame for plotting
+set.seed(2017)
+aas.melted <- melt(dat.aas[sample(1:2628, 50, replace = F),], measure.vars = c("Preprint", "Postprint"))
+aas.melted$Group <- ifelse(aas.melted$variable == "Preprint", 0, 1)
+
+# Pairwise plot
+ggplot(aas.melted, aes(Group, value, group = DOI_Pub)) +
+  geom_line()
+
+# Plot histogram of differences
+with(dat.aas, hist(Postprint - Preprint))
+# most observations around zero with a heavy right skew
+with(dat.aas, hist(log(Postprint - Preprint)))
+# log transform makes this perfectly symmetric!
+with(dat.aas, hist(log(Postprint + 1) - log(Preprint + 1)))
+# log transform makes this perfectly symmetric!
+
+# Run test for transformed data
+with(dat.aas, t.test(log(Postprint + 1), log(Preprint + 1), paired = T))
+
+# Run pairwise t-test
+with(dat.aas, t.test(Postprint, Preprint, paired = T))
+
+# Wilcoxon sign-rank test given no normality
+with(dat.aas, wilcox.test(Postprint, Preprint, paired = T, conf.int = T))
+# (the W statistic takes the sign from x - y)
+
+# Sign test to test the pairwise median
+with(dat.aas, binom.test(sum(Preprint > Postprint), length(Preprint)))
+# probability of success 0.5136986, p-value = 0.166
+
+# Median before and after publication
+with(dat.aas, median(Preprint)) # 8.791
+with(dat.aas, median(Postprint)) # 8.4
+
+# Median pairwise difference
+with(dat.aas, summary(Postprint - Preprint))
+#     Min.  1st Qu.   Median     Mean  3rd Qu.     Max. 
+# -407.886   -5.400   -0.250   14.125    7.662 2196.766 
+    
+# Plot
+with(dat.aas, plot(Preprint, Postprint, pch = 20, col = "blue1"))
+
+# What is the percentage for which post is higher than pre?
+with(dat.aas, mean(Postprint > Preprint))
+# [1] 0.4783105
+
+# Correlation coefficient, unadjusted for time of exposure
+with(dat.aas, cor(Preprint, Postprint, use = "complete.obs"))
+fit6 <- lm(Postprint ~ Preprint, dat.aas)
+summary(fit6)
+
+# Diagnostic plot
+plot(fit6, pch = 20, col = "blue1")
+
+# Without high leverage
+fit7 <- lm(Postprint ~ Preprint, dat.aas[-c(776, 1841, 1919), ])
+
+# Summarise and plot
+summary(fit7)
+plot(fit7, pch = 20, col = "blue1")
+
+fit9 <- lm(Postprint ~ Preprint, dat.aas[-c(456, 465, 761, 769, 776, 1172, 1496, 1841, 1919, 2442), ])
+plot(fit9, pch = 20, col = "blue1")
+summary(fit9)
+
+# Homoskedasticity
+ncvTest(fit7)
+
+# Bootstrap the coefficient to identify its true distribution and consider using a maximum likelihood estimator with a Poisson likelihood to account for count data. Also account for the difference in exposures (an article in bioRxiv had years to build its Altmetric score, whereas in the peer-reviewed literature it may only have had a few months). Can the Almetric score decrease?
+```
+
+
+There is a weak linear correlation between preprint AAS and published AAS (r = 0.40; p-value < 2 x 10^-16). Given the amount of observations available to us, the two r.v.s do not not need to satisfy the Normality assumption. Leverage study identified 3 data points with particularly high Cook's distance (776, 1841, 1919) - after removal r did not change appreciably (r = 0.39), but the regression line coefficient changed from 0.97 to 1.4. This remarkable change indicates that our estimate of the coefficient is very unstable and unreliable. OLS explains 15% of the variability in posterior Altmetric score and it is sensitivive to extreme Altmetric scores. However, it remained robust to further changes in data points. Upon further diagnostic analysis, this correlation does not seem to change appreciably with removal of high leverage points or outliers. However, it does not satisfy the homoskedasticity assumption, which implies that the 95% CI is inaccurate. Overall, the coefficient in my opinion should be between 1-2 with high variability.
+
+Note that the Wilcoxon signed-rank test calculates the pseudo-median, not the median. As per the documentation of the function, "the pseudomedian of a distribution F is the median of the distribution of (u+v)/2, where u and v are independent, each with distribution F. If F is symmetric, then the pseudomedian and median coincide." The pseudomedian is the  Hodges-Lehmann estimate of the median pairwise distance. The pseudo-median was 0.924969, 95% CI was 0.4499862-1.4019349, P-value was 8.561e-05 and V = 1850700 (null = true location shift equal to 0).
+
+
+Which part of the Altmetric score is driving this difference?
+
+```{r pre_vs_post_composite}
+# Select eligible preprints
+ind.col  <- c(match("DOI", colnames(pre)), grep("cited_by", colnames(pre)))
+pre.comp <- pre[, ind.col]
+
+# Select eligible postprints
+ind.col   <- c(grep("preprint_doi", colnames(post)), 
+               grep("cited_by",     colnames(post)))
+ind.row   <- !is.na(post$doi)
+post.comp <- post[ind.row, ind.col]
+
+# Reorder pre.comp as per post.comp
+pre.comp  <- pre.comp[match(post.comp$preprint_doi, pre.comp$DOI), ]
+
+# Sort columns in post.comp and pre.comp
+post.comp <- post.comp[, sort(colnames(post.comp[, -1]))]
+pre.comp  <- pre.comp [, sort(colnames(pre.comp [, -1]))]
+
+# Absolute difference from each other
+dif.comp <- post.comp - pre.comp
+
+# Summarize difference in absolute terms
+sort(apply(dif.comp, 2, mean),   decreasing = T)
+sort(apply(dif.comp, 2, sd),     decreasing = T)
+sort(apply(dif.comp, 2, median), decreasing = T)
+sort(apply(dif.comp, 2, IQR),    decreasing = T)
+
+# Relative difference across all publications
+apply(post.comp, 2, sum) - apply(pre.comp, 2, sum) / apply(post.comp, 2, sum)
+
+# Statistical significance of difference
+pval.comp <- lapply(1:15, function(x) t.test(pre.comp[, x], post.comp[, x], paired = T))
+
+names(pval.comp) <- colnames(pre.comp)
+pval.comp
+
+
+
+# Plot boxplots of before and after citation counts
+
+# Create appropraite data frame
+melt.pre.cite <- melt(pre.comp, measure.vars = 1:15) 
+melt.pre.cite <- cbind(melt.pre.cite, rep("Preprint", nrow(melt.pre.cite)))
+colnames(melt.pre.cite)[3] <- "Group"
+
+melt.post.cite <- melt(post.comp, measure.vars = 1:15) 
+melt.post.cite <- cbind(melt.post.cite, rep("Postprint", nrow(melt.post.cite)))
+colnames(melt.post.cite)[3] <- "Group"
+
+melt.cite <- rbind(melt.pre.cite, melt.post.cite)
+
+boxplot(value ~ variable*Group, 
+        data = melt.cite,
+        pch = 20, # type of outlier dots
+        col = c(rgb(0,0,1,0.7), rgb(0,1,0,0.7)), # colour blue 
+        outline = F, # removes outliers if F
+        pars = list(outcol = "red"),
+        ylim = c(0, 20)) # colour outliers
+
+# Add names to axes
+title(main = "Boxplot of views - with outliers", ylab = "Frequency")
+```
+
+The data dictionary for all of Altmetric terms can be found here: http://api.altmetric.com/docs/call_citations.html. `cited_by_accounts_count` represents the total number of accounts on any social medium citing the article. For example, if an article has been cited 2 times on facebook and 3 times on msm (main stream media), then its cited_by_accounts_count = 5. `cited_by_posts_count` refers to the total number of posts about an article on any social medium. This number is always equal or greater to the `cited_by_accounts_count` because each account can make one or more posts about an article. All counts columns represent unique accounts, not posts!
+
+The biggest difference in mean number of unique user posts was seen in Twitter (Mean, 4.3; SD, 54.3), followed by main stream media (Mean, 1.6; SD, 8.7). The median difference in all media was 0, apart from the `cited_by_tweeters_count`, which was -1. This is most probably because biorXiv seems to automatically tweet about every preprint once, whereas not all journals tweet about a new article.
+
+When summing across all publications, the biggest relative difference was seen in unique user tweets (6159917.2%), followed by unique user main stream media citations (426092.4%).
+
+In my PRC abstract I mistakenly said that the biggest difference was seen in MSM. This was biased because I had omitted NAs, whereas in this new analysis I have replaced missing values with 0 (which is the true value).
+
+# Table 6: Pre vs Post Citations
+
+```{r pre_vs_post_citations}
+# Identify order of post in pre
+pre.order <- lapply(post$preprint_doi, 
+                    function(x) which(pre$DOI[!is.na(pre$DOI_Pub)] == x))
+pre.order <- unlist(pre.order)
+
+# Citation count for preprint counterpart
+pre.cite <- thecitations[!is.na(pre$DOI_Pub)][pre.order]
+
+# Summary of citations for published counterpart
+summary(post.cite)
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+# 0.00    2.00    5.00   13.26   12.00 2310.00       7 
+sd(post.cite, na.rm = T)
+# [1] 63.3632
+
+# Summary of citations for preprint counterpart
+summary(pre.cite)
+# Min. 1st Qu.  Median    Mean 3rd Qu.    Max. 
+# 0.00    0.00    0.00    0.25    0.00   55.00 
+sd(pre.cite)
+# [1] 1.549924
+
+# Post-publication citations analyzed by year
+aggregate(post.cite ~ Year, post, summary)
+aggregate(post.cite ~ Year, post, sd, na.rm = T)
+
+# Summary of post - pre
+summary(post.cite - pre.cite)
+
+# Plot differences
+hist(post.cite - pre.cite)
+
+# Plot differences (log-transformed data)
+hist(log(post.cite + 1) - log(pre.cite + 1))
+
+# Run pairwise t-test
+t.test(post.cite, pre.cite, paired = T)
+
+# Run pairwise t-test (log-transformed data)
+t.test(log(post.cite + 1), log(pre.cite + 1), paired = T)
+
+# Wilcoxon sign-rank test given no normality
+wilcox.test(post.cite, pre.cite, paired = T, conf.int = T)
+
+# Sign test to test the pairwise median
+binom.test(sum(post.cite > pre.cite, na.rm = T), length(pre.cite))
+# probability of success 0.8942161, p-value < 2.2e-16
+
+# Find median pairwise differences
+summary(post.cite - pre.cite)
+#  Min. 1st Qu.  Median    Mean 3rd Qu.    Max.    NA's 
+# -2.00    2.00    5.00   13.07   12.00 2286.00       7 
+```
+
+Notice that this analysis is biased in that citations for preprints were extracted in 16/09/2017, whereas for their published counterparts on 29/11/2017. An analysis of 776 of these preprints with citations extracted on 16/09/2016 for both can be found in "Compare 500" for comparison.
+
+As predicted in my Compare 500 notes, the direction did not change (i.e. the citations seen in the published counterpart are significantly more than the preprint), but the magnitude increased, consistent with further exposure. The pseudomedian was 7.5 (95% CI 7.5-8.0; p-value < 2.2e-16). The mean citations were 13.3 (SD, 63.4) in the published and 0.3 (SD, 1.55) in the unpublished.
+
+
+```{r save}
+# Save
+# save(list = ls(all = TRUE), file = "bioRxiv_Analysis.RData")
+# save(pre, post, file = "bioRxiv_Analysis_Data.RData")
+```
